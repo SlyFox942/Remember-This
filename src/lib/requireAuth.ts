@@ -1,26 +1,8 @@
-import { createServerFn } from "@tanstack/react-start";
 import { redirect } from "@tanstack/react-router";
-import { verifySessionToken } from "~/lib/auth";
-
-/**
- * Server function that checks if the user is authenticated.
- * Used in beforeLoad for protected routes.
- */
-const checkAuth = createServerFn({ method: "GET" }).handler(async () => {
-  // Read session cookie from the incoming request
-  const { getWebRequest } = await import("@tanstack/react-start/server");
-  const req = getWebRequest();
-  const cookie = req?.headers.get("cookie") || "";
-  const match = cookie.match(/(?:^|;\s*)session=([^;]*)/);
-  const token = match?.[1];
-
-  if (!token) return null;
-
-  return verifySessionToken(token);
-});
 
 /**
  * beforeLoad helper for protected routes.
+ * Fetches /api/auth/me to check the session cookie.
  * Redirects to /login if not authenticated.
  *
  * Usage:
@@ -30,7 +12,21 @@ const checkAuth = createServerFn({ method: "GET" }).handler(async () => {
  *   });
  */
 export async function requireAuth() {
-  const user = await checkAuth();
-  if (!user) throw redirect({ to: "/login" });
-  return { user };
+  try {
+    // Fetch the auth endpoint. On the server, TanStack Start's fetch
+    // will route internally; on the client, it's a regular fetch.
+    const res = await fetch("/api/auth/me");
+    const data = (await res.json()) as { user: { id: string; email: string } | null };
+
+    if (!data.user) {
+      throw redirect({ to: "/login" });
+    }
+
+    return { user: data.user };
+  } catch (err) {
+    if (err && typeof err === "object" && "redirect" in err) {
+      throw err;
+    }
+    throw redirect({ to: "/login" });
+  }
 }
