@@ -1,11 +1,8 @@
 /**
  * Auth utilities — password hashing and JWT session tokens.
- * Uses bcryptjs (portable, no native deps) and jose (modern JWT).
+ * Uses Bun.password (native, no deps) and jose (modern JWT).
  */
-import { hash, compare } from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
-
-const BCRYPT_ROUNDS = 10;
 
 /** Secret for signing session tokens. Must be set in production. */
 function getSecret(): Uint8Array {
@@ -19,17 +16,17 @@ export interface SessionPayload {
   email: string;
 }
 
-// ---- Password ----
+// ---- Password (Bun native) ----
 
 export async function hashPassword(password: string): Promise<string> {
-  return hash(password, BCRYPT_ROUNDS);
+  return Bun.password.hash(password, { algorithm: "bcrypt", cost: 10 });
 }
 
 export async function verifyPassword(
   password: string,
   hash: string,
 ): Promise<boolean> {
-  return compare(password, hash);
+  return Bun.password.verify(password, hash);
 }
 
 // ---- JWT Tokens ----
