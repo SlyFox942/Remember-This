@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { requireAuth } from "~/lib/requireAuth";
 import { useAuth } from "~/lib/useAuth";
+import { useSpeechRecognition } from "~/lib/useSpeechRecognition";
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 
 // ---- Types ----
@@ -16,6 +17,12 @@ interface Entry {
   updated_at: string;
 }
 
+interface VoiceUsage {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
 // ---- Route ----
 
 export const Route = createFileRoute("/journal")({
@@ -29,25 +36,62 @@ const FONTS = ["inter", "serif", "mono", "cursive"] as const;
 
 function fontClass(font: string): string {
   switch (font) {
-    case "serif":
-      return "font-serif";
-    case "mono":
-      return "font-mono";
-    case "cursive":
-      return "font-[cursive]";
-    default:
-      return "font-sans";
+    case "serif": return "font-serif";
+    case "mono": return "font-mono";
+    case "cursive": return "font-[cursive]";
+    default: return "font-sans";
   }
 }
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
+}
+
+// ---- Mic Button ----
+
+function MicButton({
+  isListening, isSupported, onToggle, disabled, voiceRemaining,
+}: {
+  isListening: boolean;
+  isSupported: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+  voiceRemaining: number;
+}) {
+  if (!isSupported) {
+    return (
+      <span className="text-xs text-gray-400" title="Speech recognition not supported in this browser">
+        🎤 Unavailable
+      </span>
+    );
+  }
+
+  if (disabled && !isListening) {
+    return (
+      <span className="text-xs text-amber-600" title="Free tier limit reached">
+        🎤 {voiceRemaining} left
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled && !isListening}
+      className={`relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition ${
+        isListening
+          ? "bg-red-100 text-red-700 animate-pulse dark:bg-red-950 dark:text-red-300"
+          : "bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-950 dark:text-purple-300"
+      } disabled:opacity-50`}
+    >
+      <span className={`inline-block h-2 w-2 rounded-full ${isListening ? "bg-red-500" : "bg-purple-500"}`} />
+      {isListening ? "Recording..." : "Speak"}
+    </button>
+  );
 }
 
 // ---- Component ----
@@ -73,6 +117,20 @@ function JournalPage() {
   // Delete confirmation
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Voice
+  const [voiceUsage, setVoiceUsage] = useState<VoiceUsage>({ used: 0, limit: 5, remaining: 5 });
+
+  const speech = useSpeechRecognition({
+    onResult: (transcript) => {
+      setNewContent((prev) => {
+        const trimmed = prev.trimEnd();
+        return (trimmed ? trimmed + " " : "") + transcript;
+      });
+    },
+    onStart: () => setNewIsVoice(true),
+    onError: (msg) => { if (msg) setError(msg); },
+  });
+
   // ---- Data fetching ----
 
   const fetchEntries = useCallback(async () => {
@@ -88,9 +146,20 @@ function JournalPage() {
     }
   }, []);
 
+  const fetchVoiceUsage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/voice-usage");
+      if (res.ok) {
+        const data = (await res.json()) as VoiceUsage;
+        setVoiceUsage(data);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     fetchEntries();
-  }, [fetchEntries]);
+    fetchVoiceUsage();
+  }, [fetchEntries, fetchVoiceUsage]);
 
   // ---- Create ----
 
@@ -115,10 +184,19 @@ function JournalPage() {
       setNewIsVoice(false);
       setShowNewForm(false);
       await fetchEntries();
+      await fetchVoiceUsage();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleMicToggle() {
+    if (speech.isListening) {
+      speech.stop();
+    } else {
+      speech.start();
     }
   }
 
@@ -163,10 +241,13 @@ function JournalPage() {
       if (!res.ok) throw new Error("Failed to delete");
       setDeletingId(null);
       await fetchEntries();
+      await fetchVoiceUsage();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
     }
   }
+
+  const voiceDisabled = voiceUsage.remaining <= 0 && !speech.isListening;
 
   // ---- Render ----
 
@@ -175,7 +256,14 @@ function JournalPage() {
       {/* Header */}
       <header className="sticky top-0 z-10 border-b border-amber-200 bg-white/80 backdrop-blur dark:border-gray-800 dark:bg-gray-950/80">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
-          <h1 className="text-lg font-bold tracking-tight">My Journal</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-bold tracking-tight">My Journal</h1>
+            {speech.isSupported && (
+              <span className="text-xs text-gray-400">
+                🎤 {voiceUsage.remaining}/{voiceUsage.limit}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-400">{user?.email}</span>
             <button
@@ -214,7 +302,11 @@ function JournalPage() {
               className={`${fontClass(newFont)} w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700 dark:focus:border-amber-500`}
             />
 
-            <div className="mt-3 flex items-center gap-3">
+            {speech.error && (
+              <p className="mt-1 text-xs text-red-500">{speech.error}</p>
+            )}
+
+            <div className="mt-3 flex items-center gap-3 flex-wrap">
               {/* Font selector */}
               <select
                 value={newFont}
@@ -228,22 +320,24 @@ function JournalPage() {
                 ))}
               </select>
 
-              {/* Voice toggle */}
-              <label className="flex items-center gap-1.5 text-sm text-gray-500 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={newIsVoice}
-                  onChange={(e) => setNewIsVoice(e.target.checked)}
-                  className="rounded"
-                />
-                🎤 Voice
-              </label>
+              {/* Mic button */}
+              <MicButton
+                isListening={speech.isListening}
+                isSupported={speech.isSupported}
+                onToggle={handleMicToggle}
+                disabled={voiceDisabled}
+                voiceRemaining={voiceUsage.remaining}
+              />
+
+              {newIsVoice && (
+                <span className="text-xs text-purple-600">🎤 Voice entry</span>
+              )}
 
               <div className="flex-1" />
 
               <button
                 type="button"
-                onClick={() => setShowNewForm(false)}
+                onClick={() => { speech.stop(); setShowNewForm(false); }}
                 className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
               >
                 Cancel
@@ -263,12 +357,7 @@ function JournalPage() {
         {error && (
           <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
             {error}
-            <button
-              onClick={() => setError("")}
-              className="ml-2 underline"
-            >
-              Dismiss
-            </button>
+            <button onClick={() => setError("")} className="ml-2 underline">Dismiss</button>
           </div>
         )}
 
@@ -292,7 +381,6 @@ function JournalPage() {
               key={entry.id}
               className="rounded-xl border border-amber-100 bg-white p-5 shadow-sm transition hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
             >
-              {/* Editing mode */}
               {editingId === entry.id ? (
                 <div>
                   <textarea
@@ -309,85 +397,35 @@ function JournalPage() {
                       className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-800"
                     >
                       {FONTS.map((f) => (
-                        <option key={f} value={f}>
-                          {f.charAt(0).toUpperCase() + f.slice(1)}
-                        </option>
+                        <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)}</option>
                       ))}
                     </select>
                     <div className="flex-1" />
-                    <button
-                      onClick={cancelEdit}
-                      className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={() => handleUpdate(entry.id)}
-                      disabled={saving}
-                      className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
-                    >
-                      {saving ? "Saving..." : "Save"}
-                    </button>
+                    <button onClick={cancelEdit} className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">Cancel</button>
+                    <button onClick={() => handleUpdate(entry.id)} disabled={saving} className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50">{saving ? "Saving..." : "Save"}</button>
                   </div>
                 </div>
               ) : (
-                /* View mode */
                 <div>
-                  {/* Meta row */}
                   <div className="mb-2 flex items-center gap-2 text-xs text-gray-400">
                     <span>{formatDate(entry.created_at)}</span>
                     {entry.is_voice && (
-                      <span className="rounded-full bg-purple-100 px-2 py-0.5 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
-                        🎤 Voice
-                      </span>
+                      <span className="rounded-full bg-purple-100 px-2 py-0.5 text-purple-700 dark:bg-purple-950 dark:text-purple-300">🎤 Voice</span>
                     )}
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-800">
-                      {entry.font}
-                    </span>
-                    {entry.updated_at !== entry.created_at && (
-                      <span className="italic">(edited)</span>
-                    )}
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-800">{entry.font}</span>
+                    {entry.updated_at !== entry.created_at && <span className="italic">(edited)</span>}
                   </div>
-
-                  {/* Content */}
-                  <p
-                    className={`${fontClass(entry.font)} whitespace-pre-wrap text-lg leading-relaxed`}
-                  >
-                    {entry.content}
-                  </p>
-
-                  {/* Actions */}
+                  <p className={`${fontClass(entry.font)} whitespace-pre-wrap text-lg leading-relaxed`}>{entry.content}</p>
                   <div className="mt-3 flex gap-2 border-t border-gray-100 pt-3 dark:border-gray-800">
-                    <button
-                      onClick={() => startEdit(entry)}
-                      className="rounded-lg px-3 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-                    >
-                      Edit
-                    </button>
-
+                    <button onClick={() => startEdit(entry)} className="rounded-lg px-3 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">Edit</button>
                     {deletingId === entry.id ? (
                       <div className="flex items-center gap-1 text-sm text-red-600">
                         Delete?
-                        <button
-                          onClick={() => handleDelete(entry.id)}
-                          className="rounded px-2 py-0.5 font-semibold hover:bg-red-50"
-                        >
-                          Yes
-                        </button>
-                        <button
-                          onClick={() => setDeletingId(null)}
-                          className="rounded px-2 py-0.5 text-gray-500 hover:bg-gray-100"
-                        >
-                          No
-                        </button>
+                        <button onClick={() => handleDelete(entry.id)} className="rounded px-2 py-0.5 font-semibold hover:bg-red-50">Yes</button>
+                        <button onClick={() => setDeletingId(null)} className="rounded px-2 py-0.5 text-gray-500 hover:bg-gray-100">No</button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => setDeletingId(entry.id)}
-                        className="rounded-lg px-3 py-1 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
-                      >
-                        Delete
-                      </button>
+                      <button onClick={() => setDeletingId(entry.id)} className="rounded-lg px-3 py-1 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950">Delete</button>
                     )}
                   </div>
                 </div>
