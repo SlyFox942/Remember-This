@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { requireAuth } from "~/lib/requireAuth";
 import { useAuth } from "~/lib/useAuth";
 import { useSpeechRecognition } from "~/lib/useSpeechRecognition";
-import { useEffect, useState, useCallback, type FormEvent } from "react";
+import { STICKER_CATEGORIES, FREE_STICKER_LIMIT } from "~/lib/stickers";
+import { useEffect, useState, useRef, useCallback, type FormEvent } from "react";
 
 // ---- Types ----
 
@@ -120,6 +121,13 @@ function JournalPage() {
   // Voice
   const [voiceUsage, setVoiceUsage] = useState<VoiceUsage>({ used: 0, limit: 5, remaining: 5 });
 
+  // Stickers
+  const [newStickers, setNewStickers] = useState<string[]>([]);
+  const [editStickers, setEditStickers] = useState<string[]>([]);
+  const [showStickerPicker, setShowStickerPicker] = useState(false);
+  const newTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const stickerLimit = FREE_STICKER_LIMIT; // free tier; premium would be Infinity
+
   const speech = useSpeechRecognition({
     onResult: (transcript) => {
       setNewContent((prev) => {
@@ -163,6 +171,27 @@ function JournalPage() {
 
   // ---- Create ----
 
+  function addSticker(emoji: string) {
+    if (newStickers.length >= stickerLimit) return;
+    setNewStickers((s) => [...s, emoji]);
+    const ta = newTextareaRef.current;
+    if (ta) {
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const before = newContent.slice(0, start);
+      const after = newContent.slice(end);
+      setNewContent(before + emoji + after);
+      requestAnimationFrame(() => {
+        ta.focus();
+        const pos = start + emoji.length;
+        ta.setSelectionRange(pos, pos);
+      });
+    } else {
+      setNewContent((c) => c + emoji);
+    }
+    setShowStickerPicker(false);
+  }
+
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
     if (!newContent.trim()) return;
@@ -175,13 +204,14 @@ function JournalPage() {
           content: newContent.trim(),
           font: newFont,
           is_voice: newIsVoice,
-          stickers: [],
+          stickers: newStickers.map((emoji) => ({ emoji })),
         }),
       });
       if (!res.ok) throw new Error("Failed to save");
       setNewContent("");
       setNewFont("inter");
       setNewIsVoice(false);
+      setNewStickers([]);
       setShowNewForm(false);
       await fetchEntries();
       await fetchVoiceUsage();
@@ -206,12 +236,14 @@ function JournalPage() {
     setEditingId(entry.id);
     setEditContent(entry.content);
     setEditFont(entry.font);
+    setEditStickers(Array.isArray(entry.stickers) ? entry.stickers.map((s: unknown) => (s as { emoji: string }).emoji) : []);
   }
 
   function cancelEdit() {
     setEditingId(null);
     setEditContent("");
     setEditFont("inter");
+    setEditStickers([]);
   }
 
   async function handleUpdate(entryId: string) {
@@ -221,7 +253,7 @@ function JournalPage() {
       const res = await fetch(`/api/entries/${entryId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: editContent.trim(), font: editFont }),
+        body: JSON.stringify({ content: editContent.trim(), font: editFont, stickers: editStickers.map((emoji) => ({ emoji })) }),
       });
       if (!res.ok) throw new Error("Failed to update");
       cancelEdit();
@@ -294,6 +326,7 @@ function JournalPage() {
             className="mb-6 rounded-xl border border-amber-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
           >
             <textarea
+              ref={newTextareaRef}
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
               placeholder="What's on your mind today?"
@@ -302,11 +335,43 @@ function JournalPage() {
               className={`${fontClass(newFont)} w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700 dark:focus:border-amber-500`}
             />
 
+            {/* Stickers row */}
+            {newStickers.length > 0 && (
+              <div className="mt-1 flex gap-1 text-lg">{newStickers.map((e, i) => <span key={i}>{e}</span>)}</div>
+            )}
+
             {speech.error && (
               <p className="mt-1 text-xs text-red-500">{speech.error}</p>
             )}
 
             <div className="mt-3 flex items-center gap-3 flex-wrap">
+              {/* Sticker picker */}
+              <div className="relative">
+                <button type="button" onClick={() => setShowStickerPicker(!showStickerPicker)}
+                  className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800"
+                  title={`Stickers (${newStickers.length}/${stickerLimit})`}>
+                  😊 Stickers
+                </button>
+                {showStickerPicker && (
+                  <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded-xl border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                    {STICKER_CATEGORIES.map((cat) => (
+                      <div key={cat.name} className="mb-2 last:mb-0">
+                        <p className="mb-1 text-xs text-gray-400">{cat.name}</p>
+                        <div className="flex flex-wrap gap-1">
+                          {cat.emojis.map((emoji) => (
+                            <button key={emoji} type="button" onClick={() => addSticker(emoji)}
+                              disabled={newStickers.length >= stickerLimit}
+                              className="rounded p-1 text-lg hover:bg-amber-50 disabled:opacity-30">
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Font selector */}
               <select
                 value={newFont}
@@ -416,6 +481,11 @@ function JournalPage() {
                     {entry.updated_at !== entry.created_at && <span className="italic">(edited)</span>}
                   </div>
                   <p className={`${fontClass(entry.font)} whitespace-pre-wrap text-lg leading-relaxed`}>{entry.content}</p>
+                  {Array.isArray(entry.stickers) && (entry.stickers as Array<{emoji: string}>).length > 0 && (
+                    <div className="mt-2 flex gap-1 text-lg">
+                      {(entry.stickers as Array<{emoji: string}>).map((s, i) => <span key={i}>{s.emoji}</span>)}
+                    </div>
+                  )}
                   <div className="mt-3 flex gap-2 border-t border-gray-100 pt-3 dark:border-gray-800">
                     <button onClick={() => startEdit(entry)} className="rounded-lg px-3 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">Edit</button>
                     {deletingId === entry.id ? (
