@@ -2,7 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { requireAuth } from "~/lib/requireAuth";
 import { useAuth } from "~/lib/useAuth";
 import { useSpeechRecognition } from "~/lib/useSpeechRecognition";
-import { useEffect, useState, useCallback, type FormEvent } from "react";
+import { useFontLoader } from "~/lib/useFontLoader";
+import { FONTS, getAvailableFonts, getFont, type FontDef } from "~/lib/fonts";
+import { useEffect, useState, useMemo, useCallback, type FormEvent } from "react";
 
 // ---- Types ----
 
@@ -29,19 +31,6 @@ export const Route = createFileRoute("/journal")({
   beforeLoad: () => requireAuth(),
   component: JournalPage,
 });
-
-// ---- Constants ----
-
-const FONTS = ["inter", "serif", "mono", "cursive"] as const;
-
-function fontClass(font: string): string {
-  switch (font) {
-    case "serif": return "font-serif";
-    case "mono": return "font-mono";
-    case "cursive": return "font-[cursive]";
-    default: return "font-sans";
-  }
-}
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", {
@@ -101,6 +90,11 @@ function JournalPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // Font catalog
+  const userTier = (user as { tier?: string } | null)?.tier === "premium" ? "premium" : "free";
+  const availableFonts = useMemo(() => getAvailableFonts(userTier), [userTier]);
+  useFontLoader(availableFonts.map((f) => f.id));
 
   // New entry form
   const [showNewForm, setShowNewForm] = useState(false);
@@ -299,7 +293,8 @@ function JournalPage() {
               placeholder="What's on your mind today?"
               rows={6}
               autoFocus
-              className={`${fontClass(newFont)} w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700 dark:focus:border-amber-500`}
+              className="w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700 dark:focus:border-amber-500"
+              style={{ fontFamily: getFont(newFont).family }}
             />
 
             {speech.error && (
@@ -312,10 +307,11 @@ function JournalPage() {
                 value={newFont}
                 onChange={(e) => setNewFont(e.target.value)}
                 className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-800"
+                style={{ fontFamily: getFont(newFont).family }}
               >
-                {FONTS.map((f) => (
-                  <option key={f} value={f}>
-                    {f.charAt(0).toUpperCase() + f.slice(1)}
+                {availableFonts.map((f) => (
+                  <option key={f.id} value={f.id} style={{ fontFamily: f.family }}>
+                    {f.name} {f.tier === "premium" ? "✨" : ""}
                   </option>
                 ))}
               </select>
@@ -388,16 +384,18 @@ function JournalPage() {
                     onChange={(e) => setEditContent(e.target.value)}
                     rows={5}
                     autoFocus
-                    className={`${fontClass(editFont)} w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700`}
+                    className="w-full resize-none rounded-lg border border-gray-200 bg-transparent p-3 text-lg focus:border-amber-400 focus:outline-none dark:border-gray-700"
+                    style={{ fontFamily: getFont(editFont).family }}
                   />
                   <div className="mt-3 flex items-center gap-3">
                     <select
                       value={editFont}
                       onChange={(e) => setEditFont(e.target.value)}
                       className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-800"
+                      style={{ fontFamily: getFont(editFont).family }}
                     >
-                      {FONTS.map((f) => (
-                        <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)}</option>
+                      {availableFonts.map((f) => (
+                        <option key={f.id} value={f.id} style={{ fontFamily: f.family }}>{f.name}{f.tier === "premium" ? " ✨" : ""}</option>
                       ))}
                     </select>
                     <div className="flex-1" />
@@ -412,10 +410,10 @@ function JournalPage() {
                     {entry.is_voice && (
                       <span className="rounded-full bg-purple-100 px-2 py-0.5 text-purple-700 dark:bg-purple-950 dark:text-purple-300">🎤 Voice</span>
                     )}
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-800">{entry.font}</span>
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-800">{getFont(entry.font).name}</span>
                     {entry.updated_at !== entry.created_at && <span className="italic">(edited)</span>}
                   </div>
-                  <p className={`${fontClass(entry.font)} whitespace-pre-wrap text-lg leading-relaxed`}>{entry.content}</p>
+                  <p style={{ fontFamily: getFont(entry.font).family }} className="whitespace-pre-wrap text-lg leading-relaxed">{entry.content}</p>
                   <div className="mt-3 flex gap-2 border-t border-gray-100 pt-3 dark:border-gray-800">
                     <button onClick={() => startEdit(entry)} className="rounded-lg px-3 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">Edit</button>
                     {deletingId === entry.id ? (
